@@ -159,11 +159,9 @@ func (a *Adapter) Scan(callback func(*Adapter, ScanResult)) error {
 
 	propertiesChangedMatchOptions := []dbus.MatchOption{dbus.WithMatchInterface("org.freedesktop.DBus.Properties")}
 	a.bus.AddMatchSignal(propertiesChangedMatchOptions...)
-	defer a.bus.RemoveMatchSignal(propertiesChangedMatchOptions...)
 
 	newObjectMatchOptions := []dbus.MatchOption{dbus.WithMatchInterface("org.freedesktop.DBus.ObjectManager")}
 	a.bus.AddMatchSignal(newObjectMatchOptions...)
-	defer a.bus.RemoveMatchSignal(newObjectMatchOptions...)
 
 	// Go through all connected devices and present the connected devices as
 	// scan results. Also save the properties so that the full list of
@@ -345,17 +343,40 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 	// were connected between the two calls the signal wouldn't be picked up.
 	signal := make(chan *dbus.Signal)
 	a.bus.Signal(signal)
-	defer close(signal)
-	defer a.bus.RemoveSignal(signal)
 	propertiesChangedMatchOptions := []dbus.MatchOption{dbus.WithMatchInterface("org.freedesktop.DBus.Properties")}
 	a.bus.AddMatchSignal(propertiesChangedMatchOptions...)
-	defer a.bus.RemoveMatchSignal(propertiesChangedMatchOptions...)
 
 	// Read whether this device is already connected.
 	connected, err := device.device.GetProperty("org.bluez.Device1.Connected")
 	if err != nil {
 		return Device{}, err
 	}
+
+	connectChan := make(chan struct{})
+	go func() {
+		for sig := range signal {
+			switch sig.Name {
+			case "org.freedesktop.DBus.Properties.PropertiesChanged":
+				interfaceName := sig.Body[0].(string)
+				if interfaceName != "org.bluez.Device1" {
+					continue
+				}
+				if sig.Path != device.device.Path() {
+					continue
+				}
+				changes := sig.Body[1].(map[string]dbus.Variant)
+				if connected, ok := changes["Connected"].Value().(bool); ok {
+					if connected {
+						close(connectChan)
+					} else {
+						a.bus.RemoveSignal(signal)
+						close(signal)
+					}
+					a.connectHandler(device, connected)
+				}
+			}
+		}
+	}()
 
 	// Connect to the device, if not already connected.
 	if !connected.Value().(bool) {
@@ -364,27 +385,7 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 		if err != nil {
 			return Device{}, fmt.Errorf("bluetooth: failed to connect: %w", err)
 		}
-
 		// Wait until the device has connected.
-		connectChan := make(chan struct{})
-		go func() {
-			for sig := range signal {
-				switch sig.Name {
-				case "org.freedesktop.DBus.Properties.PropertiesChanged":
-					interfaceName := sig.Body[0].(string)
-					if interfaceName != "org.bluez.Device1" {
-						continue
-					}
-					if sig.Path != device.device.Path() {
-						continue
-					}
-					changes := sig.Body[1].(map[string]dbus.Variant)
-					if connected, ok := changes["Connected"].Value().(bool); ok && connected {
-						close(connectChan)
-					}
-				}
-			}
-		}()
 		<-connectChan
 	}
 
