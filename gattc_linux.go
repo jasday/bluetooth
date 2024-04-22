@@ -4,6 +4,7 @@ package bluetooth
 
 import (
 	"errors"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -242,6 +243,9 @@ func (c DeviceCharacteristic) EnableNotifications(callback func(buf []byte)) err
 			return errDupNotif
 		}
 
+		// Figure out the path of the device that this characteristic belongs to
+		devicePath := dbus.ObjectPath(path.Dir(path.Dir(string(c.characteristic.Path()))))
+
 		// Start watching for changes in the Value property.
 		c.property = make(chan *dbus.Signal)
 		c.adapter.bus.Signal(c.property)
@@ -257,12 +261,22 @@ func (c DeviceCharacteristic) EnableNotifications(callback func(buf []byte)) err
 			for sig := range c.property {
 				if sig.Name == "org.freedesktop.DBus.Properties.PropertiesChanged" {
 					interfaceName := sig.Body[0].(string)
-					if interfaceName != "org.bluez.GattCharacteristic1" {
+
+					if interfaceName == "org.bluez.Device1" && sig.Path == devicePath {
+						changes := sig.Body[1].(map[string]dbus.Variant)
+
+						if connected, ok := changes["Connected"].Value().(bool); ok && !connected {
+							c.EnableNotifications(nil)
+							return
+						}
+					} else if interfaceName != "org.bluez.GattCharacteristic1" {
 						continue
 					}
+
 					if sig.Path != c.characteristic.Path() {
 						continue
 					}
+
 					changes := sig.Body[1].(map[string]dbus.Variant)
 					if value, ok := changes["Value"].Value().([]byte); ok {
 						callback(value)
@@ -280,6 +294,7 @@ func (c DeviceCharacteristic) EnableNotifications(callback func(buf []byte)) err
 
 		err := c.adapter.bus.RemoveMatchSignal(c.propertiesChangedMatchOption)
 		c.adapter.bus.RemoveSignal(c.property)
+		close(c.property)
 		c.property = nil
 		return err
 	}
