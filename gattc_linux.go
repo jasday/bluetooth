@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"sync"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -133,12 +134,13 @@ type DeviceCharacteristic struct {
 	uuidWrapper
 	adapter                      *Adapter
 	characteristic               dbus.BusObject
+	propertyMtx                   sync.Mutex
 	property                     chan *dbus.Signal // channel where notifications are reported
 	propertiesChangedMatchOption dbus.MatchOption  // the same value must be passed to RemoveMatchSignal
 }
 
 // UUID returns the UUID for this DeviceCharacteristic.
-func (c DeviceCharacteristic) UUID() UUID {
+func (c *DeviceCharacteristic) UUID() UUID {
 	return c.uuidWrapper
 }
 
@@ -151,12 +153,12 @@ func (c DeviceCharacteristic) UUID() UUID {
 //
 // Passing a nil slice of UUIDs will return a complete
 // list of characteristics.
-func (s DeviceService) DiscoverCharacteristics(uuids []UUID) ([]DeviceCharacteristic, error) {
-	var chars []DeviceCharacteristic
+func (s DeviceService) DiscoverCharacteristics(uuids []UUID) ([]*DeviceCharacteristic, error) {
+	var chars []*DeviceCharacteristic
 	if len(uuids) > 0 {
 		// The caller wants to get a list of characteristics in a specific
 		// order.
-		chars = make([]DeviceCharacteristic, len(uuids))
+		chars = make([]*DeviceCharacteristic, len(uuids))
 	}
 
 	// Iterate through all objects managed by BlueZ, hoping to find the
@@ -180,7 +182,7 @@ func (s DeviceService) DiscoverCharacteristics(uuids []UUID) ([]DeviceCharacteri
 			continue
 		}
 		cuuid, _ := ParseUUID(properties["UUID"].Value().(string))
-		char := DeviceCharacteristic{
+		char := &DeviceCharacteristic{
 			uuidWrapper:    cuuid,
 			adapter:        s.adapter,
 			characteristic: s.adapter.bus.Object("org.bluez", dbus.ObjectPath(objectPath)),
@@ -190,7 +192,7 @@ func (s DeviceService) DiscoverCharacteristics(uuids []UUID) ([]DeviceCharacteri
 			// The caller wants to get a list of characteristics in a specific
 			// order. Check whether this is one of those.
 			for i, uuid := range uuids {
-				if chars[i] != (DeviceCharacteristic{}) {
+				if chars[i] != nil {
 					// To support multiple identical characteristics, we need to
 					// ignore the characteristics that are already found. See:
 					// https://github.com/tinygo-org/bluetooth/issues/131
@@ -210,7 +212,7 @@ func (s DeviceService) DiscoverCharacteristics(uuids []UUID) ([]DeviceCharacteri
 
 	// Check that we have found all characteristics.
 	for _, char := range chars {
-		if char == (DeviceCharacteristic{}) {
+		if char == nil {
 			return nil, errors.New("bluetooth: could not find some characteristics")
 		}
 	}
@@ -222,7 +224,7 @@ func (s DeviceService) DiscoverCharacteristics(uuids []UUID) ([]DeviceCharacteri
 // call will return before all data has been written. A limited number of such
 // writes can be in flight at any given time. This call is also known as a
 // "write command" (as opposed to a write request).
-func (c DeviceCharacteristic) WriteWithoutResponse(p []byte) (n int, err error) {
+func (c *DeviceCharacteristic) WriteWithoutResponse(p []byte) (n int, err error) {
 	err = c.characteristic.Call("org.bluez.GattCharacteristic1.WriteValue", 0, p, map[string]dbus.Variant(nil)).Err
 	if err != nil {
 		return 0, err
@@ -236,7 +238,10 @@ func (c DeviceCharacteristic) WriteWithoutResponse(p []byte) (n int, err error) 
 // changes.
 //
 // Users may call EnableNotifications with a nil callback to disable notifications.
-func (c DeviceCharacteristic) EnableNotifications(callback func(buf []byte)) error {
+func (c *DeviceCharacteristic) EnableNotifications(callback func(buf []byte)) error {
+	c.propertyMtx.Lock()
+	defer c.propertyMtx.Unlock()
+
 	switch callback {
 	default:
 		if c.property != nil {
@@ -308,7 +313,7 @@ func (c DeviceCharacteristic) EnableNotifications(callback func(buf []byte)) err
 }
 
 // GetMTU returns the MTU for the characteristic.
-func (c DeviceCharacteristic) GetMTU() (uint16, error) {
+func (c *DeviceCharacteristic) GetMTU() (uint16, error) {
 	mtu, err := c.characteristic.GetProperty("org.bluez.GattCharacteristic1.MTU")
 	if err != nil {
 		return uint16(0), err
@@ -317,7 +322,7 @@ func (c DeviceCharacteristic) GetMTU() (uint16, error) {
 }
 
 // Read reads the current characteristic value.
-func (c DeviceCharacteristic) Read(data []byte) (int, error) {
+func (c *DeviceCharacteristic) Read(data []byte) (int, error) {
 	options := make(map[string]interface{})
 	var result []byte
 	err := c.characteristic.Call("org.bluez.GattCharacteristic1.ReadValue", 0, options).Store(&result)
