@@ -269,7 +269,9 @@ func (c DeviceCharacteristic) EnableNotifications(callback func(buf []byte)) err
 							c.EnableNotifications(nil)
 							return
 						}
-					} else if interfaceName != "org.bluez.GattCharacteristic1" {
+					}
+
+					if interfaceName != "org.bluez.GattCharacteristic1" {
 						continue
 					}
 
@@ -292,7 +294,12 @@ func (c DeviceCharacteristic) EnableNotifications(callback func(buf []byte)) err
 			return nil
 		}
 
-		err := c.adapter.bus.RemoveMatchSignal(c.propertiesChangedMatchOption)
+		err := c.characteristic.Call("org.bluez.GattCharacteristic1.StopNotify", 0).Err
+		if err != nil {
+			return err
+		}
+
+		err = c.adapter.bus.RemoveMatchSignal(c.propertiesChangedMatchOption)
 		c.adapter.bus.RemoveSignal(c.property)
 		close(c.property)
 		c.property = nil
