@@ -195,9 +195,14 @@ func (a *Adapter) Scan(callback func(*Adapter, ScanResult)) error {
 		devices[path] = device
 	}
 
-	// Instruct BlueZ to start discovering.
-	err = a.adapter.Call("org.bluez.Adapter1.StartDiscovery", 0).Err
-	if err != nil {
+	// Instruct BlueZ to start discovering if it isn't already.
+	if disc, err := a.adapter.GetProperty("org.bluez.Adapter1.Discovering"); disc.Value().(bool) == false && err == nil {
+		err = a.adapter.Call("org.bluez.Adapter1.StartDiscovery", 0).Err
+		if err != nil {
+			return err
+		}
+		defer a.adapter.Call("org.bluez.Adapter1.StopDiscovery", 0)
+	} else if err != nil {
 		return err
 	}
 
