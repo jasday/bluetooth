@@ -1,19 +1,18 @@
-//go:build hci || ninafw
+//go:build hci || ninafw || cyw43439
 
 package bluetooth
 
 import (
-	"machine"
 	"runtime"
 
 	"time"
 )
 
-// hciAdapter represents the implementation for the UART connection to the HCI controller.
+// hciAdapter represents the implementation for the connection to the HCI controller.
 type hciAdapter struct {
-	uart *machine.UART
-	hci  *hci
-	att  *att
+	hciport hciTransport
+	hci     *hci
+	att     *att
 
 	isDefault bool
 	scanning  bool
@@ -26,9 +25,18 @@ type hciAdapter struct {
 }
 
 func (a *hciAdapter) enable() error {
-	a.hci.start()
+	if err := a.hci.start(); err != nil {
+		if debug {
+			println("error starting HCI:", err.Error())
+		}
+		return err
+	}
 
 	if err := a.hci.reset(); err != nil {
+		if debug {
+			println("error resetting HCI:", err.Error())
+		}
+
 		return err
 	}
 
@@ -49,8 +57,8 @@ func (a *hciAdapter) Address() (MACAddress, error) {
 	return MACAddress{MAC: makeAddress(a.hci.address)}, nil
 }
 
-func newBLEStack(uart *machine.UART) (*hci, *att) {
-	h := newHCI(uart)
+func newBLEStack(port hciTransport) (*hci, *att) {
+	h := newHCI(port)
 	a := newATT(h)
 	h.att = a
 

@@ -1,4 +1,4 @@
-//go:build ninafw
+//go:build ninafw || hci || cyw43439
 
 package bluetooth
 
@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"machine"
 	"time"
 )
 
@@ -67,10 +66,11 @@ const (
 	leMetaEventEnhancedConnectionComplete     = 0x0A
 	leMetaEventDirectAdvertisingReport        = 0x0B
 
-	hciCommandPkt  = 0x01
-	hciACLDataPkt  = 0x02
-	hciEventPkt    = 0x04
-	hciSecurityPkt = 0x06
+	hciCommandPkt         = 0x01
+	hciACLDataPkt         = 0x02
+	hciSynchronousDataPkt = 0x03
+	hciEventPkt           = 0x04
+	hciSecurityPkt        = 0x06
 
 	evtDisconnComplete  = 0x05
 	evtEncryptionChange = 0x08
@@ -122,10 +122,17 @@ type leConnectData struct {
 	timeout        uint16
 }
 
+type hciTransport interface {
+	startRead()
+	endRead()
+	Buffered() int
+	ReadByte() (byte, error)
+	Read(buf []byte) (int, error)
+	Write(buf []byte) (int, error)
+}
+
 type hci struct {
-	uart              *machine.UART
-	softCTS           machine.Pin
-	softRTS           machine.Pin
+	transport         hciTransport
 	att               *att
 	l2cap             *l2cap
 	buf               []byte
@@ -140,24 +147,30 @@ type hci struct {
 	pendingPkt        uint16
 }
 
-func newHCI(uart *machine.UART) *hci {
+func newHCI(t hciTransport) *hci {
 	return &hci{
-		uart:    uart,
-		softCTS: machine.NoPin,
-		softRTS: machine.NoPin,
-		buf:     make([]byte, 256),
+		transport: t,
+		buf:       make([]byte, 256),
 	}
 }
 
 func (h *hci) start() error {
-	if h.softRTS != machine.NoPin {
-		h.softRTS.Low()
+	h.transport.startRead()
+	defer h.transport.endRead()
 
-		defer h.softRTS.High()
-	}
+	var data [32]byte
+	for {
+		if i := h.transport.Buffered(); i > 0 {
+			if i > len(data) {
+				i = len(data)
+			}
+			if _, err := h.transport.Read(data[:i]); err != nil {
+				return err
+			}
 
-	for h.uart.Buffered() > 0 {
-		h.uart.ReadByte()
+			continue
+		}
+		return nil
 	}
 
 	return nil
@@ -172,22 +185,24 @@ func (h *hci) reset() error {
 }
 
 func (h *hci) poll() error {
-	if h.softRTS != machine.NoPin {
-		h.softRTS.Low()
-
-		defer h.softRTS.High()
-	}
+	h.transport.startRead()
+	defer h.transport.endRead()
 
 	i := 0
-	for h.uart.Buffered() > 0 {
-		data, _ := h.uart.ReadByte()
-		h.buf[i] = data
+	for h.transport.Buffered() > 0 {
+		sz := h.transport.Buffered()
+		c := sz + 4 - (sz % 4)
+		_, err := h.transport.Read(h.buf[i : i+c])
+		if err != nil {
+			return err
+		}
+		i += sz
 
 		done, err := h.processPacket(i)
 		switch {
 		case err == ErrHCIUnknown || err == ErrHCIInvalidPacket || err == ErrHCIUnknownEvent:
 			if debug {
-				println("hci error:", err.Error())
+				println("hci error:", err.Error(), hex.EncodeToString(h.buf[:i]))
 			}
 			i = 0
 			time.Sleep(5 * time.Millisecond)
@@ -202,7 +217,6 @@ func (h *hci) poll() error {
 			i = 0
 			time.Sleep(5 * time.Millisecond)
 		default:
-			i++
 			time.Sleep(1 * time.Millisecond)
 		}
 	}
@@ -241,9 +255,19 @@ func (h *hci) processPacket(i int) (bool, error) {
 			}
 		}
 
+	case hciSynchronousDataPkt:
+		// not supported by BLE, so ignore
+		if i > 3 {
+			pktlen := int(h.buf[3])
+			if debug {
+				println("hci synchronous data:", i, pktlen, hex.EncodeToString(h.buf[:1+3+pktlen]))
+			}
+			return true, nil
+		}
+
 	default:
 		if debug {
-			println("unknown packet data:", h.buf[0])
+			println("unknown packet data:", hex.EncodeToString(h.buf[0:i]))
 		}
 		return true, ErrHCIUnknown
 	}
@@ -487,25 +511,8 @@ func (h *hci) sendAclPkt(handle uint16, cid uint8, data []byte) error {
 	return nil
 }
 
-const writeAttempts = 200
-
 func (h *hci) write(buf []byte) (int, error) {
-	if h.softCTS != machine.NoPin {
-		retries := writeAttempts
-		for h.softCTS.Get() {
-			retries--
-			if retries == 0 {
-				return 0, ErrHCITimeout
-			}
-		}
-	}
-
-	n, err := h.uart.Write(buf)
-	if err != nil {
-		return 0, err
-	}
-
-	return n, nil
+	return h.transport.Write(buf)
 }
 
 type aclDataHeader struct {
@@ -745,6 +752,10 @@ func (h *hci) handleEventData(buf []byte) error {
 			return ErrHCIUnknownEvent
 		}
 	case evtHardwareError:
+		if debug {
+			println("evtHardwareError", hex.EncodeToString(buf))
+		}
+
 		return ErrHCIUnknownEvent
 	}
 

@@ -42,6 +42,12 @@ smoketest-tinygo:
 	@md5sum test.hex
 	$(TINYGO) build -o test.uf2 -size=short -target=nano-rp2040 		  ./examples/advertisement
 	@md5sum test.hex
+	$(TINYGO) build -o test.uf2 -size=short -target=circuitplay-express -tags="hci hci_uart" ./examples/advertisement
+	@md5sum test.hex
+	$(TINYGO) build -o test.uf2 -size=short -target=pico-w	./examples/discover
+	@md5sum test.hex
+	$(TINYGO) build -o test.uf2 -size=short -target=badger2040-w	./examples/advertisement
+	@md5sum test.hex
 
 smoketest-linux:
 	# Test on Linux.
@@ -58,6 +64,8 @@ smoketest-windows:
 	GOOS=windows go build -o /tmp/go-build-discard ./examples/scanner
 	GOOS=windows go build -o /tmp/go-build-discard ./examples/discover
 	GOOS=windows go build -o /tmp/go-build-discard ./examples/heartrate-monitor
+	GOOS=windows go build -o /tmp/go-build-discard ./examples/advertisement
+	GOOS=windows go build -o /tmp/go-build-discard ./examples/heartrate
 
 smoketest-macos:
 	# Test on macos.

@@ -77,9 +77,8 @@ type ManufacturerDataElement struct {
 
 // ServiceDataElement strores a uuid/byte-array pair used as ServiceData advertisment elements
 type ServiceDataElement struct {
-	// service uuid or company uuid
+	// Service UUID.
 	// The list can also be viewed here:
-	// https://bitbucket.org/bluetooth-SIG/public/src/main/assigned_numbers/company_identifiers/company_identifiers.yaml
 	// https://bitbucket.org/bluetooth-SIG/public/src/main/assigned_numbers/uuids/service_uuids.yaml
 	UUID UUID
 	// the data byte array
@@ -106,7 +105,7 @@ type ScanResult struct {
 	// Bluetooth address of the scanned device.
 	Address Address
 
-	// RSSI the last time a packet from this device has been received.
+	// Signal strength of the  advertisement packet.
 	RSSI int16
 
 	// The data obtained from the advertisement data, which may contain many
