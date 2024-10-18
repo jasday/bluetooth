@@ -363,35 +363,36 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 	}
 	connectChan := make(chan struct{})
 	go func() {
-		for {
-			select {
-			case <-time.After(time.Duration(params.ConnectionTimeout)):
-				a.bus.RemoveSignal(signal)
-				close(signal)
-				close(connectChan)
-				return
-			case sig := <-signal:
-				switch sig.Name {
-				case "org.freedesktop.DBus.Properties.PropertiesChanged":
-					interfaceName := sig.Body[0].(string)
-					if interfaceName != "org.bluez.Device1" {
-						continue
+		for sig := range signal {
+			switch sig.Name {
+			case "org.freedesktop.DBus.Properties.PropertiesChanged":
+				interfaceName := sig.Body[0].(string)
+				if interfaceName != "org.bluez.Device1" {
+					continue
+				}
+				if sig.Path != device.device.Path() {
+					continue
+				}
+				changes := sig.Body[1].(map[string]dbus.Variant)
+				if connected, ok := changes["Connected"].Value().(bool); ok {
+					if connected {
+						close(connectChan)
+					} else {
+						a.bus.RemoveSignal(signal)
+						close(signal)
 					}
-					if sig.Path != device.device.Path() {
-						continue
-					}
-					changes := sig.Body[1].(map[string]dbus.Variant)
-					if connected, ok := changes["Connected"].Value().(bool); ok {
-						if connected {
-							close(connectChan)
-						} else {
-							a.bus.RemoveSignal(signal)
-							close(signal)
-						}
-						a.connectHandler(device, connected)
-					}
+					a.connectHandler(device, connected)
 				}
 			}
+		}
+	}()
+	go func() {
+		time.Sleep(time.Duration(params.ConnectionTimeout))
+		connected, err := device.device.GetProperty("org.bluez.Device1.Connected")
+		if !connected.Value().(bool) || err != nil {
+			a.bus.RemoveSignal(signal)
+			close(signal)
+			close(connectChan)
 		}
 	}()
 
