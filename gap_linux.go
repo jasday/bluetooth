@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
@@ -371,7 +372,7 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 		}
 
 		// Wait until the device has connected.
-		connectChan := make(chan struct{})
+		connectChan := make(chan error)
 		go func() {
 			for sig := range signal {
 				switch sig.Name {
@@ -390,7 +391,23 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 				}
 			}
 		}()
-		<-connectChan
+		go func() {
+			if params.ConnectionTimeout <= 0 {
+				params.ConnectionTimeout = NewDuration(30 * time.Second)
+			}
+			time.Sleep(time.Duration(params.ConnectionTimeout))
+			connected, err := device.device.GetProperty("org.bluez.Device1.Connected")
+			if !connected.Value().(bool) || err != nil {
+				a.bus.RemoveSignal(signal)
+				close(signal)
+				connectChan <- fmt.Errorf("connection timeout exceeded: %w", err)
+			}
+		}()
+		err = <-connectChan
+		close(connectChan)
+		if err != nil {
+			return Device{}, err
+		}
 	}
 
 	return device, nil
