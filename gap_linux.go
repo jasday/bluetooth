@@ -361,7 +361,7 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 	if params.ConnectionTimeout <= 0 {
 		params.ConnectionTimeout = NewDuration(30 * time.Second)
 	}
-	connectChan := make(chan struct{})
+	connectChan := make(chan error)
 	go func() {
 		for sig := range signal {
 			switch sig.Name {
@@ -392,7 +392,7 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 		if !connected.Value().(bool) || err != nil {
 			a.bus.RemoveSignal(signal)
 			close(signal)
-			close(connectChan)
+			connectChan <- err
 		}
 	}()
 
@@ -404,7 +404,11 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 			return Device{}, fmt.Errorf("bluetooth: failed to connect: %w", err)
 		}
 		// Wait until the device has connected.
-		<-connectChan
+		err = <-connectChan
+		close(connectChan)
+		if err != nil {
+			return Device{}, err
+		}
 	}
 
 	return device, nil
