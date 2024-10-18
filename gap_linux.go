@@ -358,14 +358,17 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 		return Device{}, err
 	}
 
+	if params.ConnectionTimeout <= 0 {
+		params.ConnectionTimeout = NewDuration(30 * time.Second)
+	}
 	connectChan := make(chan struct{})
 	go func() {
 		for {
 			select {
 			case <-time.After(time.Duration(params.ConnectionTimeout)):
-				close(connectChan)
 				a.bus.RemoveSignal(signal)
 				close(signal)
+				close(connectChan)
 				return
 			case sig := <-signal:
 				switch sig.Name {
