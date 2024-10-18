@@ -364,6 +364,8 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 			select {
 			case <-time.After(time.Duration(params.ConnectionTimeout)):
 				close(connectChan)
+				a.bus.RemoveSignal(signal)
+				close(signal)
 				return
 			case sig := <-signal:
 				switch sig.Name {
