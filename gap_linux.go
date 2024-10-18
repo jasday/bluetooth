@@ -358,9 +358,6 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 		return Device{}, err
 	}
 
-	if params.ConnectionTimeout <= 0 {
-		params.ConnectionTimeout = NewDuration(30 * time.Second)
-	}
 	connectChan := make(chan error)
 	go func() {
 		for sig := range signal {
@@ -387,12 +384,15 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 		}
 	}()
 	go func() {
+		if params.ConnectionTimeout <= 0 {
+			params.ConnectionTimeout = NewDuration(30 * time.Second)
+		}
 		time.Sleep(time.Duration(params.ConnectionTimeout))
 		connected, err := device.device.GetProperty("org.bluez.Device1.Connected")
 		if !connected.Value().(bool) || err != nil {
 			a.bus.RemoveSignal(signal)
 			close(signal)
-			connectChan <- err
+			connectChan <- fmt.Errorf("connection timeout exceeded: %w", err)
 		}
 	}()
 
