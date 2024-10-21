@@ -387,8 +387,7 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 					}
 					changes := sig.Body[1].(map[string]dbus.Variant)
 					if connected, ok := changes["Connected"].Value().(bool); ok && connected {
-						close(connectChan)
-						close(cancelTimeout)
+						connectChan <- nil
 					}
 				}
 			}
@@ -406,10 +405,10 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 			case <-cancelTimeout:
 				return
 			}
-			close(cancelTimeout)
 		}()
 		err = <-connectChan
 		close(connectChan)
+		close(cancelTimeout)
 		if err != nil {
 			return Device{}, err
 		}
