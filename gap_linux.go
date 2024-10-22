@@ -397,7 +397,7 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 				params.ConnectionTimeout = NewDuration(30 * time.Second)
 			}
 			select {
-			case <-time.After(time.Duration(params.ConnectionTimeout)):
+			case <-time.After(params.ConnectionTimeout.AsTimeDuration()):
 				connected, err := device.device.GetProperty("org.bluez.Device1.Connected")
 				if !connected.Value().(bool) || err != nil {
 					connectChan <- fmt.Errorf("connection timeout exceeded: %w", err)
