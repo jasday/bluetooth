@@ -3,10 +3,12 @@
 package bluetooth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
@@ -195,9 +197,14 @@ func (a *Adapter) Scan(callback func(*Adapter, ScanResult)) error {
 		devices[path] = device
 	}
 
-	// Instruct BlueZ to start discovering.
-	err = a.adapter.Call("org.bluez.Adapter1.StartDiscovery", 0).Err
-	if err != nil {
+	// Instruct BlueZ to start discovering if it isn't already.
+	if disc, err := a.adapter.GetProperty("org.bluez.Adapter1.Discovering"); disc.Value().(bool) == false && err == nil {
+		err = a.adapter.Call("org.bluez.Adapter1.StartDiscovery", 0).Err
+		if err != nil {
+			return err
+		}
+		defer a.adapter.Call("org.bluez.Adapter1.StopDiscovery", 0)
+	} else if err != nil {
 		return err
 	}
 
@@ -345,6 +352,7 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 	// were connected between the two calls the signal wouldn't be picked up.
 	signal := make(chan *dbus.Signal)
 	a.bus.Signal(signal)
+	defer close(signal)
 	defer a.bus.RemoveSignal(signal)
 	propertiesChangedMatchOptions := []dbus.MatchOption{dbus.WithMatchInterface("org.freedesktop.DBus.Properties")}
 	a.bus.AddMatchSignal(propertiesChangedMatchOptions...)
@@ -358,14 +366,22 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 
 	// Connect to the device, if not already connected.
 	if !connected.Value().(bool) {
+		if params.ConnectionTimeout <= 0 {
+			params.ConnectionTimeout = NewDuration(30 * time.Second)
+		}
+
 		// Start connecting (async).
-		err := device.device.Call("org.bluez.Device1.Connect", 0).Err
+		ctx, ctxCancel := context.WithCancel(context.Background())
+		ctxTimer := time.AfterFunc(params.ConnectionTimeout.AsTimeDuration(), ctxCancel)
+		err := device.device.CallWithContext(ctx, "org.bluez.Device1.Connect", 0).Err
 		if err != nil {
 			return Device{}, fmt.Errorf("bluetooth: failed to connect: %w", err)
 		}
+		ctxTimer.Stop()
 
-		// Wait until the device has connected.
-		connectChan := make(chan struct{})
+		// Wait until the device has connected or the connection attempt times out.
+		connectChan := make(chan error)
+		defer close(connectChan)
 		go func() {
 			for sig := range signal {
 				switch sig.Name {
@@ -379,12 +395,24 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 					}
 					changes := sig.Body[1].(map[string]dbus.Variant)
 					if connected, ok := changes["Connected"].Value().(bool); ok && connected {
-						close(connectChan)
+						connectChan <- nil
 					}
 				}
 			}
 		}()
-		<-connectChan
+		ctxTimer = time.AfterFunc(params.ConnectionTimeout.AsTimeDuration(), func() {
+			connected, err := device.device.GetProperty("org.bluez.Device1.Connected")
+			if !connected.Value().(bool) || err != nil {
+				connectChan <- fmt.Errorf("connection timeout exceeded: %w", err)
+			} else {
+				connectChan <- nil
+			}
+		})
+		err = <-connectChan
+		ctxTimer.Stop()
+		if err != nil {
+			return Device{}, err
+		}
 	}
 
 	return device, nil

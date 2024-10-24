@@ -19,6 +19,7 @@ type Address struct {
 }
 
 type Advertisement struct {
+	Address       Address // the MAC address of the device
 	advertisement *advertisement.BluetoothLEAdvertisement
 	publisher     *advertisement.BluetoothLEAdvertisementPublisher
 }
