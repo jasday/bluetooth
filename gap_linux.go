@@ -3,10 +3,12 @@
 package bluetooth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/prop"
@@ -364,14 +366,22 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 
 	// Connect to the device, if not already connected.
 	if !connected.Value().(bool) {
+		if params.ConnectionTimeout <= 0 {
+			params.ConnectionTimeout = NewDuration(30 * time.Second)
+		}
+
 		// Start connecting (async).
-		err := device.device.Call("org.bluez.Device1.Connect", 0).Err
+		ctx, ctxCancel := context.WithCancel(context.Background())
+		ctxTimer := time.AfterFunc(params.ConnectionTimeout.AsTimeDuration(), ctxCancel)
+		err := device.device.CallWithContext(ctx, "org.bluez.Device1.Connect", 0).Err
 		if err != nil {
 			return Device{}, fmt.Errorf("bluetooth: failed to connect: %w", err)
 		}
+		ctxTimer.Stop()
 
-		// Wait until the device has connected.
-		connectChan := make(chan struct{})
+		// Wait until the device has connected or the connection attempt times out.
+		connectChan := make(chan error)
+		defer close(connectChan)
 		go func() {
 			for sig := range signal {
 				switch sig.Name {
@@ -385,12 +395,24 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 					}
 					changes := sig.Body[1].(map[string]dbus.Variant)
 					if connected, ok := changes["Connected"].Value().(bool); ok && connected {
-						close(connectChan)
+						connectChan <- nil
 					}
 				}
 			}
 		}()
-		<-connectChan
+		ctxTimer = time.AfterFunc(params.ConnectionTimeout.AsTimeDuration(), func() {
+			connected, err := device.device.GetProperty("org.bluez.Device1.Connected")
+			if !connected.Value().(bool) || err != nil {
+				connectChan <- fmt.Errorf("connection timeout exceeded: %w", err)
+			} else {
+				connectChan <- nil
+			}
+		})
+		err = <-connectChan
+		ctxTimer.Stop()
+		if err != nil {
+			return Device{}, err
+		}
 	}
 
 	return device, nil
