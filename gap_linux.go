@@ -371,7 +371,7 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 			return Device{}, fmt.Errorf("bluetooth: failed to connect: %w", err)
 		}
 
-		// Wait until the device has connected.
+		// Wait until the device has connected or the connection attempt times out.
 		connectChan := make(chan error)
 		cancelTimeout := make(chan bool)
 		go func() {
@@ -397,13 +397,15 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 				params.ConnectionTimeout = NewDuration(30 * time.Second)
 			}
 			select {
+			case <-cancelTimeout:
 			case <-time.After(params.ConnectionTimeout.AsTimeDuration()):
 				connected, err := device.device.GetProperty("org.bluez.Device1.Connected")
 				if !connected.Value().(bool) || err != nil {
 					connectChan <- fmt.Errorf("connection timeout exceeded: %w", err)
+				} else {
+					connectChan <- nil
 				}
-			case <-cancelTimeout:
-				return
+				<-cancelTimeout
 			}
 		}()
 		err = <-connectChan
