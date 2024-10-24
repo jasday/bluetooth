@@ -365,16 +365,15 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 
 	// Connect to the device, if not already connected.
 	if !connected.Value().(bool) {
-		// Start connecting (async).
-		err := device.device.Call("org.bluez.Device1.Connect", 0).Err
-		if err != nil {
-			return Device{}, fmt.Errorf("bluetooth: failed to connect: %w", err)
-		}
-
 		// Wait until the device has connected or the connection attempt times out.
 		connectChan := make(chan error)
 		cancelTimeout := make(chan bool)
 		go func() {
+			// Start connecting (async).
+			err := device.device.Call("org.bluez.Device1.Connect", 0).Err
+			if err != nil {
+				connectChan <- fmt.Errorf("bluetooth: failed to connect: %w", err)
+			}
 			for sig := range signal {
 				switch sig.Name {
 				case "org.freedesktop.DBus.Properties.PropertiesChanged":
