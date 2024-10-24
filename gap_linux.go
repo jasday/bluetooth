@@ -3,6 +3,7 @@
 package bluetooth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -365,15 +366,24 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 
 	// Connect to the device, if not already connected.
 	if !connected.Value().(bool) {
+		if params.ConnectionTimeout <= 0 {
+			params.ConnectionTimeout = NewDuration(30 * time.Second)
+		}
+
+		// Start connecting (async).
+		ctx, cancelConnect := context.WithCancel(context.Background())
+		time.AfterFunc(params.ConnectionTimeout.AsTimeDuration(), cancelConnect)
+		err := device.device.CallWithContext(ctx, "org.bluez.Device1.Connect", 0).Err
+		if err != nil {
+			return Device{}, fmt.Errorf("bluetooth: failed to connect: %w", err)
+		}
+
 		// Wait until the device has connected or the connection attempt times out.
 		connectChan := make(chan error)
+		defer close(connectChan)
 		cancelTimeout := make(chan bool)
+		defer close(cancelTimeout)
 		go func() {
-			// Start connecting (async).
-			err := device.device.Call("org.bluez.Device1.Connect", 0).Err
-			if err != nil {
-				connectChan <- fmt.Errorf("bluetooth: failed to connect: %w", err)
-			}
 			for sig := range signal {
 				switch sig.Name {
 				case "org.freedesktop.DBus.Properties.PropertiesChanged":
@@ -392,9 +402,6 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 			}
 		}()
 		go func() {
-			if params.ConnectionTimeout <= 0 {
-				params.ConnectionTimeout = NewDuration(30 * time.Second)
-			}
 			select {
 			case <-cancelTimeout:
 			case <-time.After(params.ConnectionTimeout.AsTimeDuration()):
@@ -407,8 +414,6 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 			}
 		}()
 		err = <-connectChan
-		close(connectChan)
-		close(cancelTimeout)
 		if err != nil {
 			return Device{}, err
 		}
