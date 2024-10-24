@@ -405,7 +405,6 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 				} else {
 					connectChan <- nil
 				}
-				<-cancelTimeout
 			}
 		}()
 		err = <-connectChan
