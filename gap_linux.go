@@ -371,18 +371,17 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 		}
 
 		// Start connecting (async).
-		ctx, cancelConnect := context.WithCancel(context.Background())
-		time.AfterFunc(params.ConnectionTimeout.AsTimeDuration(), cancelConnect)
+		ctx, ctxCancel := context.WithCancel(context.Background())
+		ctxTimer := time.AfterFunc(params.ConnectionTimeout.AsTimeDuration(), ctxCancel)
 		err := device.device.CallWithContext(ctx, "org.bluez.Device1.Connect", 0).Err
 		if err != nil {
 			return Device{}, fmt.Errorf("bluetooth: failed to connect: %w", err)
 		}
+		ctxTimer.Stop()
 
 		// Wait until the device has connected or the connection attempt times out.
 		connectChan := make(chan error)
 		defer close(connectChan)
-		cancelTimeout := make(chan bool)
-		defer close(cancelTimeout)
 		go func() {
 			for sig := range signal {
 				switch sig.Name {
@@ -401,19 +400,16 @@ func (a *Adapter) Connect(address Address, params ConnectionParams) (Device, err
 				}
 			}
 		}()
-		go func() {
-			select {
-			case <-cancelTimeout:
-			case <-time.After(params.ConnectionTimeout.AsTimeDuration()):
-				connected, err := device.device.GetProperty("org.bluez.Device1.Connected")
-				if !connected.Value().(bool) || err != nil {
-					connectChan <- fmt.Errorf("connection timeout exceeded: %w", err)
-				} else {
-					connectChan <- nil
-				}
+		ctxTimer = time.AfterFunc(params.ConnectionTimeout.AsTimeDuration(), func() {
+			connected, err := device.device.GetProperty("org.bluez.Device1.Connected")
+			if !connected.Value().(bool) || err != nil {
+				connectChan <- fmt.Errorf("connection timeout exceeded: %w", err)
+			} else {
+				connectChan <- nil
 			}
-		}()
+		})
 		err = <-connectChan
+		ctxTimer.Stop()
 		if err != nil {
 			return Device{}, err
 		}
